@@ -5,12 +5,21 @@ let sounds = [];
 let activeSounds = new Set();
 let soundStopTimers = [];
 let ellipses = [];
-let ballToSound = {};
+let ballToSound = []; // ballToSound[ellipseIndex] -> sound index, indices line up with `ellipses`
 let ellipseSpacing = 100;
 let baseSize = 50;
 let isPaused = true; // Track pause state
-let frameSkip = 3; // Only update every 3 frames
+
+// handPose emits results faster than we need to react to; only keeping
+// every 3rd frame keeps movement responsive without flooding `hands`
+// updates and overworking the gesture/sound logic each frame.
+let frameSkip = 3;
 let frameCount = 0;
+
+// How close (in canvas px) a fingertip must be to an ellipse to activate it.
+// Tuned by feel against the default ellipseSpacing (100px) and baseSize (50px)
+// — small enough that neighboring balls don't activate together.
+const ellipseHoverRadius = 100;
 
 
 // Colors assigned to each sound
@@ -146,16 +155,16 @@ function createEllipses() {
 function assignBallsToSounds() {
   // Assign each ellipse to whichever sound its x position maps to, so the
   // ball that lights up always matches the sound that plays there.
-  for (let i = 0; i < ellipses.length; i++) {
-    ballToSound[i] = soundIndexForX(ellipses[i].x);
-  }
+  ballToSound = ellipses.map((ellipseProps) => soundIndexForX(ellipseProps.x));
 }
 
 
 function drawEllipses() {
   noStroke();
   for (let ellipseProps of ellipses) {
-    // Smoothly transition to target colors and sizes
+    // Smoothly transition to target colors and sizes.
+    // Lower factor (0.1) = slower color fade, higher (0.2) = snappier size
+    // change — tuned by feel so the highlight feels responsive but not jarring.
     ellipseProps.color[0] = lerp(ellipseProps.color[0], ellipseProps.targetColor[0], 0.1);
     ellipseProps.color[1] = lerp(ellipseProps.color[1], ellipseProps.targetColor[1], 0.1);
     ellipseProps.color[2] = lerp(ellipseProps.color[2], ellipseProps.targetColor[2], 0.1);
@@ -177,13 +186,11 @@ function drawPausedScreen() {
 }
 
 function animateEllipses(handX, handY) {
-  let maxDistance = 100; // Adjusted for smaller coverage
-
   for (let i = 0; i < ellipses.length; i++) {
     let ellipseProps = ellipses[i];
     let distance = dist(handX, handY, ellipseProps.x, ellipseProps.y);
 
-    if (distance < maxDistance) {
+    if (distance < ellipseHoverRadius) {
       ellipseProps.isActive = true;
       ellipseProps.targetColor = soundColors[ballToSound[i]]; // Highlight active ball
     } else if (!isAnyHandNear(ellipseProps.x, ellipseProps.y)) {
@@ -194,14 +201,12 @@ function animateEllipses(handX, handY) {
 }
 
 function isAnyHandNear(x, y) {
-  let maxDistance = 100; // Smaller hand coverage for accuracy
-
   for (let hand of hands) {
     let indexTip = hand.keypoints.find(k => k.name === 'index_finger_tip');
     if (indexTip) {
       let flippedX = width - indexTip.x;
       let distance = dist(flippedX, indexTip.y, x, y);
-      if (distance < maxDistance) {
+      if (distance < ellipseHoverRadius) {
         return true;
       }
     }
@@ -240,12 +245,17 @@ function controlSoundForHand(x, y) {
 
 function scheduleStop(soundIndex) {
   cancelStopTimer(soundIndex); // never stack timers for the same sound
-  sounds[soundIndex].setVolume(0, 0.5);
+
+  // Fade out over 500ms, then actually stop once the fade completes —
+  // avoids an abrupt cutoff when a hand leaves a sound's zone. The
+  // setTimeout duration must match the fade duration passed to setVolume.
+  let fadeDurationMs = 500;
+  sounds[soundIndex].setVolume(0, fadeDurationMs / 1000);
   soundStopTimers[soundIndex] = setTimeout(() => {
     sounds[soundIndex].stop();
     activeSounds.delete(soundIndex);
     soundStopTimers[soundIndex] = null;
-  }, 500);
+  }, fadeDurationMs);
 }
 
 function stopInactiveSounds() {
