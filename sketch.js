@@ -42,7 +42,11 @@ const soundColors = [
 function preload() {
   // Explicitly request both hands — some ml5/MediaPipe defaults only track one,
   // and Weave's whole "two hands conducting" idea depends on both being seen.
-  handPose = ml5.handPose({ maxHands: 2 });
+  // Also lower the detection/tracking confidence thresholds: the MediaPipe
+  // default (~0.5) can favor whichever hand is most clearly framed and drop
+  // the second one, especially when hands overlap or one is partly out of
+  // frame — exactly the "only detects one hand" symptom being reported.
+  handPose = ml5.handPose({ maxHands: 2, minHandDetectionConfidence: 0.3, minTrackingConfidence: 0.3 });
 
   // Load 12 Sounds
   sounds.push(loadSound('Sounds/mixkit-angelic-drum-roll-573.wav'));
@@ -173,20 +177,24 @@ function pinchVolumeScale(hand) {
   return map(clamped, pinchClosedRatio, pinchOpenRatio, pinchMinVolume, pinchMaxVolume);
 }
 
-// Visual feedback for the pinch gesture: a ring around the fingertip whose
-// radius tracks the live volume ceiling — pinch in and it shrinks, spread
-// open and it grows — so people can see the gesture is registering and
-// which way to move to raise or lower volume, without reading any numbers.
-const pinchRingMinRadius = 12;
-const pinchRingMaxRadius = 40;
+// Visual feedback for the pinch gesture: a small horizontal meter bar that
+// floats just below the fingertip and fills left-to-right with the live
+// volume ceiling — pinch in and it drains, spread open and it fills. Using
+// a bar (not another circle) keeps it from visually fusing with the grid of
+// round sound-balls, so it reads as its own distinct piece of feedback.
+const pinchMeterWidth = 50;
+const pinchMeterHeight = 6;
+const pinchMeterOffsetY = 35;
 
 function drawPinchRing(x, y, volumeScale) {
-  let radius = map(volumeScale, pinchMinVolume, pinchMaxVolume, pinchRingMinRadius, pinchRingMaxRadius);
-  noFill();
-  stroke(255, 255, 255, 180);
-  strokeWeight(3);
-  ellipse(x, y, radius * 2, radius * 2);
+  let barY = y + pinchMeterOffsetY;
+  let fillWidth = map(volumeScale, pinchMinVolume, pinchMaxVolume, 0, pinchMeterWidth);
+
   noStroke();
+  fill(255, 255, 255, 80);
+  rect(x - pinchMeterWidth / 2, barY, pinchMeterWidth, pinchMeterHeight);
+  fill(255, 255, 255, 220);
+  rect(x - pinchMeterWidth / 2, barY, fillWidth, pinchMeterHeight);
 }
 
 function gotHands(results) {
