@@ -95,7 +95,8 @@ function draw() {
     if (indexTip) {
       let flippedX = width - indexTip.x; // Flip the x-axis for natural interaction
       animateEllipses(flippedX, indexTip.y);
-      collectDesiredSounds(handIndex, flippedX, indexTip.y, desiredSounds);
+      let volumeScale = pinchVolumeScale(hand); // pinched fingers = quieter, spread = louder
+      collectDesiredSounds(handIndex, flippedX, indexTip.y, volumeScale, desiredSounds);
     } else {
       fingerHistories[handIndex] = null; // no fingertip this frame — don't carry stale flutter history
     }
@@ -111,18 +112,23 @@ function draw() {
   syncActiveSounds(desiredSounds);
 }
 
-function detectFist(hand) {
+// Distance between wrist and middle-knuckle, used as a per-hand "ruler" so
+// gesture thresholds (fist, pinch) scale with how big the hand appears —
+// which varies with camera resolution, lens, and distance from the lens —
+// instead of relying on fixed pixel values tuned to one specific setup.
+function handScale(hand) {
   let wrist = hand.keypoints.find(k => k.name === 'wrist');
   let middleKnuckle = hand.keypoints.find(k => k.name === 'middle_finger_mcp');
-  if (!wrist || !middleKnuckle) return false;
+  if (!wrist || !middleKnuckle) return 0;
+  return dist(wrist.x, wrist.y, middleKnuckle.x, middleKnuckle.y);
+}
 
-  // Use the wrist-to-knuckle distance as a "hand scale" reference so the
-  // fist threshold adapts to hand size — which varies with camera
-  // resolution, lens, and how far the user stands from the camera.
-  let handScale = dist(wrist.x, wrist.y, middleKnuckle.x, middleKnuckle.y);
-  if (handScale === 0) return false;
+function detectFist(hand) {
+  let wrist = hand.keypoints.find(k => k.name === 'wrist');
+  let scale = handScale(hand);
+  if (!wrist || scale === 0) return false;
 
-  let closedThreshold = handScale * 1.3;
+  let closedThreshold = scale * 1.3;
   let fingertips = ['thumb_tip', 'index_finger_tip', 'middle_finger_tip', 'ring_finger_tip', 'pinky_tip'];
 
   for (let tip of fingertips) {
@@ -135,6 +141,26 @@ function detectFist(hand) {
     }
   }
   return true; // All fingertips are close to the wrist, so it's a fist
+}
+
+// Pinching (thumb and index finger drawing together) controls volume —
+// pinched = quiet, spread open = full volume. The thumb-to-index distance
+// is measured relative to handScale() so it adapts across cameras/distances,
+// the same way fist detection does.
+const pinchClosedRatio = 0.4; // thumb-to-index distance / handScale when "closed"
+const pinchOpenRatio = 1.4;   // ...when "open"
+const pinchMinVolume = 0.15;  // never fully mute via pinch — keep some presence
+const pinchMaxVolume = 1.0;
+
+function pinchVolumeScale(hand) {
+  let thumbTip = hand.keypoints.find(k => k.name === 'thumb_tip');
+  let indexTip = hand.keypoints.find(k => k.name === 'index_finger_tip');
+  let scale = handScale(hand);
+  if (!thumbTip || !indexTip || scale === 0) return pinchMaxVolume;
+
+  let ratio = dist(thumbTip.x, thumbTip.y, indexTip.x, indexTip.y) / scale;
+  let clamped = constrain(ratio, pinchClosedRatio, pinchOpenRatio);
+  return map(clamped, pinchClosedRatio, pinchOpenRatio, pinchMinVolume, pinchMaxVolume);
 }
 
 function gotHands(results) {
@@ -267,7 +293,6 @@ function cancelStopTimer(soundIndex) {
 const flutterHistoryLength = 15;
 const flutterMinPathLength = 60; // px — ignore tiny jitter from a still hand
 const flutterPathToDisplacementRatio = 2.2;
-const primaryVolume = 1;
 
 // Faster fluttering (more px traveled in the same window) => faster wobble.
 const tremoloMinRateHz = 4;
@@ -305,28 +330,30 @@ function flutterPathLength(history) {
 // A continuous volume oscillation (LFO) whose speed scales with flutter
 // intensity. Using millis() (not frameCount) keeps the wobble's real-world
 // speed consistent regardless of frame rate.
-function tremoloVolume(pathLength) {
+function tremoloVolume(pathLength, ceiling) {
   let rateHz = map(constrain(pathLength, flutterMinPathLength, tremoloMaxPathLength),
                    flutterMinPathLength, tremoloMaxPathLength,
                    tremoloMinRateHz, tremoloMaxRateHz);
   let lfo = sin((millis() / 1000) * rateHz * TWO_PI); // oscillates -1..1
-  return primaryVolume - tremoloDepth / 2 + (tremoloDepth / 2) * lfo; // ranges (1 - depth)..1
+  return ceiling - tremoloDepth / 2 + (tremoloDepth / 2) * lfo; // wobbles just under the pinch ceiling
 }
 
 // Figures out what one hand wants to hear right now and merges it into the
 // shared desiredSounds map. `ramp` is how long setVolume should take to reach
 // the target — tremolo needs near-instant updates each frame so the wobble is
 // actually audible; normal movement gets a smooth ramp to avoid clicks.
-function collectDesiredSounds(handIndex, x, y, desiredSounds) {
+// `volumeScale` is the pinch-controlled ceiling (1.0 = full volume, lower =
+// pinched quieter) — both normal playback and tremolo respect it.
+function collectDesiredSounds(handIndex, x, y, volumeScale, desiredSounds) {
   let history = recordFingerPosition(handIndex, x, y);
   let zone = soundIndexForPosition(x, y);
   let pathLength = flutterPathLength(history);
 
   if (pathLength !== null) {
-    desiredSounds.set(zone, { volume: tremoloVolume(pathLength), ramp: 0 });
+    desiredSounds.set(zone, { volume: tremoloVolume(pathLength, volumeScale), ramp: 0 });
   } else if (!desiredSounds.has(zone) || desiredSounds.get(zone).ramp === 0) {
     // Don't let a plain point override another hand's tremolo on the same zone
-    desiredSounds.set(zone, { volume: primaryVolume, ramp: 0.15 });
+    desiredSounds.set(zone, { volume: volumeScale, ramp: 0.15 });
   }
 }
 

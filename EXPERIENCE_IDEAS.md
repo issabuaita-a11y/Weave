@@ -15,9 +15,15 @@ detection) are tracked separately in commit history on `weave-improvements`.
   speed scales with how fast the flutter is — a direct, physical link between
   the gesture and what you hear (like a violinist's wrist motion becoming
   vibrato). See `CHANGELOG.md`.
-- **Expanded gesture vocabulary** — beyond point + fist + flutter: pinch for
-  volume control, spread for layering/chords, two-hand interactions for
-  harmony or panning. Leans further into the "becoming a conductor" framing.
+- **✅ Implemented — pinch for volume control**: bringing thumb and index
+  finger together lowers volume, spreading them raises it — measured relative
+  to the hand's own size (the same scale-adaptive approach as fist detection)
+  so it's consistent across cameras and distances. Acts as a live ceiling
+  that both normal playback and the flutter/tremolo effect respect. See
+  `CHANGELOG.md`.
+- **Expanded gesture vocabulary** — beyond point + fist + flutter + pinch:
+  spread for layering/chords, two-hand interactions for harmony or panning.
+  Leans further into the "becoming a conductor" framing.
 - **Visual feedback for gesture state** — show users what's currently being
   detected (hand found, gesture recognized, etc.), so first-time users in an
   installation setting can "get it" within seconds.

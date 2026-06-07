@@ -32,6 +32,14 @@ All notable changes made on the `weave-improvements` branch are documented here.
   crossfades between sounds during normal movement, that effect wasn't
   perceptibly different — tremolo gives the gesture a distinct, audible
   identity tied directly to the physical motion.)
+- **Added pinch-to-control-volume gesture** — bringing thumb and index
+  finger together now lowers volume; spreading them raises it. Measured as
+  a ratio against the hand's own size (the same scale-adaptive "ruler" used
+  for fist detection), so it works consistently across different cameras and
+  distances rather than relying on fixed pixel thresholds. This acts as a
+  live ceiling that both normal sound playback and the flutter/tremolo
+  effect respect — pinching down softens a tremolo too, not just a sustained
+  note.
 
 ## Code cleanup
 
