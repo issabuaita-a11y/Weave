@@ -40,7 +40,9 @@ const soundColors = [
 ];
 
 function preload() {
-  handPose = ml5.handPose();
+  // Explicitly request both hands — some ml5/MediaPipe defaults only track one,
+  // and Weave's whole "two hands conducting" idea depends on both being seen.
+  handPose = ml5.handPose({ maxHands: 2 });
 
   // Load 12 Sounds
   sounds.push(loadSound('Sounds/mixkit-angelic-drum-roll-573.wav'));
