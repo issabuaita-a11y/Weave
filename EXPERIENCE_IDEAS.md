@@ -6,9 +6,15 @@ detection) are tracked separately in commit history on `weave-improvements`.
 
 ## Gesture & interaction
 
-- **Expanded gesture vocabulary** — beyond point + fist: pinch for volume
-  control, spread for layering/chords, two-hand interactions for harmony or
-  panning. Leans further into the "becoming a conductor" framing.
+- **✅ Implemented — "flutter to blend"**: many people were observed quickly
+  wagging/fluttering their fingers, seemingly trying to mix nearby sounds
+  rather than switch between them one at a time. The system now detects this
+  motion (a winding path that loops back near its start, vs. a deliberate
+  point-and-move) and layers up to 3 nearby sounds together at a softened
+  volume instead of hard-switching. See `CHANGELOG.md`.
+- **Expanded gesture vocabulary** — beyond point + fist + flutter: pinch for
+  volume control, spread for layering/chords, two-hand interactions for
+  harmony or panning. Leans further into the "becoming a conductor" framing.
 - **Visual feedback for gesture state** — show users what's currently being
   detected (hand found, gesture recognized, etc.), so first-time users in an
   installation setting can "get it" within seconds.

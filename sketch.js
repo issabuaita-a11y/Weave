@@ -4,6 +4,7 @@ let hands = [];
 let sounds = [];
 let activeSounds = new Set();
 let soundStopTimers = [];
+let fingerHistories = []; // per-hand rolling window of recent fingertip positions, used to detect "fluttering"
 let ellipses = [];
 let ballToSound = []; // ballToSound[ellipseIndex] -> sound index, indices line up with `ellipses`
 let ellipseSpacing = 100;
@@ -80,25 +81,34 @@ function draw() {
   if (hands.length === 0) {
     resetEllipses();
     stopAllSounds();
+    fingerHistories = []; // stale positions shouldn't trigger a false flutter when hands return
     return;
   }
 
-  hands.forEach((hand) => {
+  // soundIndex -> target volume. Built up across all hands, then applied
+  // in one pass so overlapping requests (e.g. two hands wanting the same
+  // sound) just take the louder request rather than fighting each other.
+  let desiredVolumes = new Map();
+
+  hands.forEach((hand, handIndex) => {
     let indexTip = hand.keypoints.find(k => k.name === 'index_finger_tip');
     if (indexTip) {
       let flippedX = width - indexTip.x; // Flip the x-axis for natural interaction
       animateEllipses(flippedX, indexTip.y);
-      controlSoundForHand(flippedX, indexTip.y);
+      collectDesiredSounds(handIndex, flippedX, indexTip.y, desiredVolumes);
+    } else {
+      fingerHistories[handIndex] = null; // no fingertip this frame — don't carry stale flutter history
     }
 
     // Detect fist gesture
     if (detectFist(hand)) {
       stopAllSounds(); // Stop all sounds
       resetEllipses(); // Reset ellipses to default state
+      desiredVolumes.clear(); // a fist overrides whatever the hand was just doing
     }
   });
 
-  stopInactiveSounds();
+  syncActiveSounds(desiredVolumes);
 }
 
 function detectFist(hand) {
@@ -241,16 +251,92 @@ function cancelStopTimer(soundIndex) {
   }
 }
 
-function controlSoundForHand(x, y) {
-  let soundIndex = soundIndexForPosition(x, y);
+// "Fluttering" — quickly wagging fingers back and forth in a small area —
+// is a gesture people do naturally when they want to blend a few adjacent
+// sounds rather than commit to one. We detect it by looking at a short
+// rolling window of recent fingertip positions: a flutter covers a long,
+// winding path but ends up roughly where it started (high path-to-net-
+// displacement ratio), unlike a deliberate point-and-move which travels
+// in roughly one direction.
+const flutterHistoryLength = 15;
+const flutterMinPathLength = 60; // px — ignore tiny jitter from a still hand
+const flutterPathToDisplacementRatio = 2.2;
+const maxBlendedSounds = 3;
+const blendedVolume = 0.6; // quieter per-sound so a 3-way blend doesn't overwhelm
+const primaryVolume = 1;
 
-  cancelStopTimer(soundIndex); // hand is back on this sound — don't let a queued stop kill it
+function recordFingerPosition(handIndex, x, y) {
+  let history = fingerHistories[handIndex] || [];
+  history.push({ x, y });
+  if (history.length > flutterHistoryLength) history.shift();
+  fingerHistories[handIndex] = history;
+  return history;
+}
 
-  if (!activeSounds.has(soundIndex)) {
-    activeSounds.add(soundIndex);
-    sounds[soundIndex].setVolume(1);
-    if (!sounds[soundIndex].isPlaying()) {
-      sounds[soundIndex].loop();
+function isFluttering(history) {
+  if (history.length < flutterHistoryLength) return false;
+
+  let pathLength = 0;
+  for (let i = 1; i < history.length; i++) {
+    pathLength += dist(history[i - 1].x, history[i - 1].y, history[i].x, history[i].y);
+  }
+  if (pathLength < flutterMinPathLength) return false; // hand is basically still
+
+  let netDisplacement = dist(
+    history[0].x, history[0].y,
+    history[history.length - 1].x, history[history.length - 1].y
+  );
+  return pathLength / max(netDisplacement, 1) > flutterPathToDisplacementRatio;
+}
+
+// Pick the most recent distinct sound zones the fingertip passed through —
+// these are the sounds a fluttering hand is "hovering between" and wants blended.
+function recentDistinctZones(history) {
+  let zones = [];
+  for (let i = history.length - 1; i >= 0 && zones.length < maxBlendedSounds; i--) {
+    let zone = soundIndexForPosition(history[i].x, history[i].y);
+    if (!zones.includes(zone)) zones.push(zone);
+  }
+  return zones;
+}
+
+// Figures out what one hand wants to hear right now and merges it into the
+// shared desiredVolumes map (louder request wins if hands overlap on a sound).
+function collectDesiredSounds(handIndex, x, y, desiredVolumes) {
+  let history = recordFingerPosition(handIndex, x, y);
+
+  let zonesToVolumes;
+  if (isFluttering(history)) {
+    zonesToVolumes = recentDistinctZones(history).map((zone) => [zone, blendedVolume]);
+  } else {
+    zonesToVolumes = [[soundIndexForPosition(x, y), primaryVolume]];
+  }
+
+  for (let [soundIndex, volume] of zonesToVolumes) {
+    desiredVolumes.set(soundIndex, max(desiredVolumes.get(soundIndex) || 0, volume));
+  }
+}
+
+// Brings actual sound playback in line with what the hands currently want:
+// starts/raises anything newly desired, fades out anything no longer wanted.
+function syncActiveSounds(desiredVolumes) {
+  desiredVolumes.forEach((targetVolume, soundIndex) => {
+    cancelStopTimer(soundIndex); // still wanted — don't let a queued stop kill it
+
+    if (!activeSounds.has(soundIndex)) {
+      activeSounds.add(soundIndex);
+      if (!sounds[soundIndex].isPlaying()) {
+        sounds[soundIndex].loop();
+      }
+    }
+    sounds[soundIndex].setVolume(targetVolume, 0.15); // smooth ramp avoids clicks when blending shifts
+  });
+
+  // Copy to an array first — scheduleStop mutates activeSounds asynchronously,
+  // and mutating a Set while iterating it is asking for trouble.
+  for (let soundIndex of [...activeSounds]) {
+    if (!desiredVolumes.has(soundIndex) && !soundStopTimers[soundIndex]) {
+      scheduleStop(soundIndex);
     }
   }
 }
@@ -268,24 +354,6 @@ function scheduleStop(soundIndex) {
     activeSounds.delete(soundIndex);
     soundStopTimers[soundIndex] = null;
   }, fadeDurationMs);
-}
-
-function stopInactiveSounds() {
-  let activeZones = new Set();
-  for (let hand of hands) {
-    let indexTip = hand.keypoints.find(k => k.name === 'index_finger_tip');
-    if (indexTip) {
-      activeZones.add(soundIndexForPosition(width - indexTip.x, indexTip.y));
-    }
-  }
-
-  // Copy to an array first — scheduleStop mutates activeSounds asynchronously,
-  // and mutating a Set while iterating it is asking for trouble.
-  for (let soundIndex of [...activeSounds]) {
-    if (!activeZones.has(soundIndex) && !soundStopTimers[soundIndex]) {
-      scheduleStop(soundIndex);
-    }
-  }
 }
 
 function stopAllSounds() {
