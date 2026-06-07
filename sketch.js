@@ -102,7 +102,7 @@ function draw() {
       let flippedX = width - indexTip.x; // Flip the x-axis for natural interaction
       animateEllipses(flippedX, indexTip.y);
       let volumeScale = pinchVolumeScale(hand); // pinched fingers = quieter, spread = louder
-      drawPinchRing(flippedX, indexTip.y, volumeScale);
+      noteVolumeForHud(volumeScale);
       collectDesiredSounds(handIndex, flippedX, indexTip.y, volumeScale, desiredSounds);
     } else {
       fingerHistories[handIndex] = null; // no fingertip this frame — don't carry stale flutter history
@@ -117,6 +117,7 @@ function draw() {
   });
 
   syncActiveSounds(desiredSounds);
+  drawVolumeHud();
 }
 
 // Distance between wrist and middle-knuckle, used as a per-hand "ruler" so
@@ -177,24 +178,50 @@ function pinchVolumeScale(hand) {
   return map(clamped, pinchClosedRatio, pinchOpenRatio, pinchMinVolume, pinchMaxVolume);
 }
 
-// Visual feedback for the pinch gesture: a small horizontal meter bar that
-// floats just below the fingertip and fills left-to-right with the live
-// volume ceiling — pinch in and it drains, spread open and it fills. Using
-// a bar (not another circle) keeps it from visually fusing with the grid of
-// round sound-balls, so it reads as its own distinct piece of feedback.
-const pinchMeterWidth = 50;
-const pinchMeterHeight = 6;
-const pinchMeterOffsetY = 35;
+// Visual feedback for the pinch gesture, styled after the macOS volume HUD:
+// a rounded pill of segmented bars, fixed at the top-center of the screen —
+// deliberately NOT attached to the hand, so it never overlaps or competes
+// with the moving balls. It only appears while the volume is actively being
+// changed (like the Mac HUD appearing on a key press) and fades out shortly
+// after the hand stops adjusting it, so it's never just sitting there as
+// visual noise.
+const hudSegmentCount = 10;
+const hudVisibleMs = 900;
+const hudChangeThreshold = 0.01;
 
-function drawPinchRing(x, y, volumeScale) {
-  let barY = y + pinchMeterOffsetY;
-  let fillWidth = map(volumeScale, pinchMinVolume, pinchMaxVolume, 0, pinchMeterWidth);
+let hudLastVolume = null;
+let hudVisibleUntil = 0;
+
+function noteVolumeForHud(volumeScale) {
+  if (hudLastVolume !== null && abs(volumeScale - hudLastVolume) > hudChangeThreshold) {
+    hudVisibleUntil = millis() + hudVisibleMs;
+  }
+  hudLastVolume = volumeScale;
+}
+
+function drawVolumeHud() {
+  if (millis() > hudVisibleUntil || hudLastVolume === null) return;
+
+  let pillW = 200;
+  let pillH = 56;
+  let pillX = width / 2 - pillW / 2;
+  let pillY = 30;
 
   noStroke();
-  fill(255, 255, 255, 80);
-  rect(x - pinchMeterWidth / 2, barY, pinchMeterWidth, pinchMeterHeight);
-  fill(255, 255, 255, 220);
-  rect(x - pinchMeterWidth / 2, barY, fillWidth, pinchMeterHeight);
+  fill(40, 40, 40, 200);
+  rect(pillX, pillY, pillW, pillH, pillH / 2);
+
+  let segmentGap = 4;
+  let segmentWidth = (pillW - 40 - segmentGap * (hudSegmentCount - 1)) / hudSegmentCount;
+  let segmentHeight = 16;
+  let startX = pillX + 20;
+  let segmentY = pillY + (pillH - segmentHeight) / 2;
+  let litCount = round(map(hudLastVolume, pinchMinVolume, pinchMaxVolume, 0, hudSegmentCount));
+
+  for (let i = 0; i < hudSegmentCount; i++) {
+    fill(i < litCount ? color(255, 255, 255, 230) : color(255, 255, 255, 60));
+    rect(startX + i * (segmentWidth + segmentGap), segmentY, segmentWidth, segmentHeight, 2);
+  }
 }
 
 function gotHands(results) {
