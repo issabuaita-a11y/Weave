@@ -40,13 +40,13 @@ const soundColors = [
 ];
 
 function preload() {
-  // Explicitly request both hands — some ml5/MediaPipe defaults only track one,
-  // and Weave's whole "two hands conducting" idea depends on both being seen.
-  // Also lower the detection/tracking confidence thresholds: the MediaPipe
-  // default (~0.5) can favor whichever hand is most clearly framed and drop
-  // the second one, especially when hands overlap or one is partly out of
-  // frame — exactly the "only detects one hand" symptom being reported.
-  handPose = ml5.handPose({ maxHands: 2, minHandDetectionConfidence: 0.3, minTrackingConfidence: 0.3 });
+  // maxHands: 2 is ml5's own default, kept explicit since Weave's whole
+  // "two hands conducting" idea depends on both being seen. (Tried lowering
+  // ml5's detection/tracking confidence thresholds here too, but those
+  // option names aren't part of ml5 handPose's schema — they're silently
+  // ignored — so that wasn't actually doing anything. See KNOWN_ISSUES.md
+  // for the open two-hand-detection report.)
+  handPose = ml5.handPose({ maxHands: 2 });
 
   // Load 12 Sounds
   sounds.push(loadSound('Sounds/mixkit-angelic-drum-roll-573.wav'));
@@ -101,7 +101,7 @@ function draw() {
     if (indexTip) {
       let flippedX = width - indexTip.x; // Flip the x-axis for natural interaction
       animateEllipses(flippedX, indexTip.y);
-      let volumeScale = pinchVolumeScale(hand); // pinched fingers = quieter, spread = louder
+      let volumeScale = pinchVolumeScale(hand, handIndex); // pinched fingers = quieter, spread = louder, smoothed
       noteVolumeForHud(volumeScale);
       collectDesiredSounds(handIndex, flippedX, indexTip.y, volumeScale, desiredSounds);
     } else {
@@ -167,15 +167,30 @@ const pinchOpenRatio = 0.55;   // ...when "open" (relaxed pointing pose, not a w
 const pinchMinVolume = 0.15;  // never fully mute via pinch — keep some presence
 const pinchMaxVolume = 1.0;
 
-function pinchVolumeScale(hand) {
+// Raw frame-to-frame hand tracking is jittery, and the volume this drives
+// gets applied to already-playing audio — so following it directly made the
+// volume jump around fast enough to click/crackle the sound. Smoothing each
+// hand's value toward its target over time turns that into a gradual fade,
+// the same way normal point-to-point movement already ramps with `ramp`.
+const pinchSmoothingFactor = 0.06; // lower = slower, gentler volume changes
+let smoothedPinchVolumes = [];
+
+function pinchVolumeScale(hand, handIndex) {
   let thumbTip = hand.keypoints.find(k => k.name === 'thumb_tip');
   let indexTip = hand.keypoints.find(k => k.name === 'index_finger_tip');
   let scale = handScale(hand);
-  if (!thumbTip || !indexTip || scale === 0) return pinchMaxVolume;
 
-  let ratio = dist(thumbTip.x, thumbTip.y, indexTip.x, indexTip.y) / scale;
-  let clamped = constrain(ratio, pinchClosedRatio, pinchOpenRatio);
-  return map(clamped, pinchClosedRatio, pinchOpenRatio, pinchMinVolume, pinchMaxVolume);
+  let target = pinchMaxVolume;
+  if (thumbTip && indexTip && scale !== 0) {
+    let ratio = dist(thumbTip.x, thumbTip.y, indexTip.x, indexTip.y) / scale;
+    let clamped = constrain(ratio, pinchClosedRatio, pinchOpenRatio);
+    target = map(clamped, pinchClosedRatio, pinchOpenRatio, pinchMinVolume, pinchMaxVolume);
+  }
+
+  let current = smoothedPinchVolumes[handIndex];
+  current = current === undefined ? target : lerp(current, target, pinchSmoothingFactor);
+  smoothedPinchVolumes[handIndex] = current;
+  return current;
 }
 
 // Visual feedback for the pinch gesture, styled after the macOS volume HUD:
