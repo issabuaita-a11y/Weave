@@ -153,9 +153,9 @@ function createEllipses() {
 }
 
 function assignBallsToSounds() {
-  // Assign each ellipse to whichever sound its x position maps to, so the
+  // Assign each ellipse to whichever sound its grid position maps to, so the
   // ball that lights up always matches the sound that plays there.
-  ballToSound = ellipses.map((ellipseProps) => soundIndexForX(ellipseProps.x));
+  ballToSound = ellipses.map((ellipseProps) => soundIndexForPosition(ellipseProps.x, ellipseProps.y));
 }
 
 
@@ -214,11 +214,23 @@ function isAnyHandNear(x, y) {
   return false;
 }
 
-// Single source of truth for "which sound zone is x in" — used both to
-// trigger sounds and to decide which sounds should keep playing, so the
-// two never disagree.
-function soundIndexForX(x) {
-  let soundIndex = floor(map(x, 0, width, 0, sounds.length));
+// Sounds are laid out across a 2D grid of zones (columns x rows) rather
+// than sliced along a single axis — people naturally gesture across both
+// width and height, so spreading sounds over both makes every one of them
+// reachable through normal movement instead of clustering around whichever
+// horizontal band a hand happens to sweep through.
+const soundGridCols = 4;
+
+// Single source of truth for "which sound zone is this position in" — used
+// both to trigger sounds and to decide which sounds should keep playing
+// (and to color the ellipse grid), so all three never disagree.
+// `sounds` is only populated once preload() runs, so rows are computed
+// here rather than at script-load time when `sounds` would still be empty.
+function soundIndexForPosition(x, y) {
+  let soundGridRows = Math.ceil(sounds.length / soundGridCols);
+  let col = constrain(floor(map(x, 0, width, 0, soundGridCols)), 0, soundGridCols - 1);
+  let row = constrain(floor(map(y, 0, height, 0, soundGridRows)), 0, soundGridRows - 1);
+  let soundIndex = row * soundGridCols + col;
   return constrain(soundIndex, 0, sounds.length - 1);
 }
 
@@ -230,7 +242,7 @@ function cancelStopTimer(soundIndex) {
 }
 
 function controlSoundForHand(x, y) {
-  let soundIndex = soundIndexForX(x);
+  let soundIndex = soundIndexForPosition(x, y);
 
   cancelStopTimer(soundIndex); // hand is back on this sound — don't let a queued stop kill it
 
@@ -263,7 +275,7 @@ function stopInactiveSounds() {
   for (let hand of hands) {
     let indexTip = hand.keypoints.find(k => k.name === 'index_finger_tip');
     if (indexTip) {
-      activeZones.add(soundIndexForX(width - indexTip.x));
+      activeZones.add(soundIndexForPosition(width - indexTip.x, indexTip.y));
     }
   }
 
