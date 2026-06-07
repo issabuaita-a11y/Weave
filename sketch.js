@@ -149,8 +149,15 @@ function detectFist(hand) {
 // pinched = quiet, spread open = full volume. The thumb-to-index distance
 // is measured relative to handScale() so it adapts across cameras/distances,
 // the same way fist detection does.
-const pinchClosedRatio = 0.4; // thumb-to-index distance / handScale when "closed"
-const pinchOpenRatio = 1.4;   // ...when "open"
+// Note: in a natural pointing pose (the sketch's primary gesture), the thumb
+// rests fairly close to the index finger — its ratio sits well below 1.0.
+// The old 0.4–1.4 range treated that resting pose as "half pinched," quietly
+// dragging volume down on any hand that wasn't deliberately spread wide open
+// (which read as "barely detecting" that hand). Shifted the range down so a
+// relaxed pointing hand lands near full volume, and only a deliberate pinch
+// (thumb and index actually touching) lowers it.
+const pinchClosedRatio = 0.12; // thumb-to-index distance / handScale when "closed"
+const pinchOpenRatio = 0.55;   // ...when "open" (relaxed pointing pose, not a wide spread)
 const pinchMinVolume = 0.15;  // never fully mute via pinch — keep some presence
 const pinchMaxVolume = 1.0;
 
