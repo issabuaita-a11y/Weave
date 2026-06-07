@@ -85,17 +85,17 @@ function draw() {
     return;
   }
 
-  // soundIndex -> target volume. Built up across all hands, then applied
-  // in one pass so overlapping requests (e.g. two hands wanting the same
-  // sound) just take the louder request rather than fighting each other.
-  let desiredVolumes = new Map();
+  // soundIndex -> { volume, ramp }. Built up across all hands, then applied
+  // in one pass — so e.g. a fluttering hand's tremolo on a zone isn't
+  // overridden by another hand simply pointing at the same zone.
+  let desiredSounds = new Map();
 
   hands.forEach((hand, handIndex) => {
     let indexTip = hand.keypoints.find(k => k.name === 'index_finger_tip');
     if (indexTip) {
       let flippedX = width - indexTip.x; // Flip the x-axis for natural interaction
       animateEllipses(flippedX, indexTip.y);
-      collectDesiredSounds(handIndex, flippedX, indexTip.y, desiredVolumes);
+      collectDesiredSounds(handIndex, flippedX, indexTip.y, desiredSounds);
     } else {
       fingerHistories[handIndex] = null; // no fingertip this frame — don't carry stale flutter history
     }
@@ -104,11 +104,11 @@ function draw() {
     if (detectFist(hand)) {
       stopAllSounds(); // Stop all sounds
       resetEllipses(); // Reset ellipses to default state
-      desiredVolumes.clear(); // a fist overrides whatever the hand was just doing
+      desiredSounds.clear(); // a fist overrides whatever the hand was just doing
     }
   });
 
-  syncActiveSounds(desiredVolumes);
+  syncActiveSounds(desiredSounds);
 }
 
 function detectFist(hand) {
@@ -252,18 +252,28 @@ function cancelStopTimer(soundIndex) {
 }
 
 // "Fluttering" — quickly wagging fingers back and forth in a small area —
-// is a gesture people do naturally when they want to blend a few adjacent
-// sounds rather than commit to one. We detect it by looking at a short
-// rolling window of recent fingertip positions: a flutter covers a long,
-// winding path but ends up roughly where it started (high path-to-net-
-// displacement ratio), unlike a deliberate point-and-move which travels
-// in roughly one direction.
+// is a gesture people do naturally and instinctively. Rather than try to
+// reuse it for switching/blending sounds (the sketch already crossfades
+// between sounds as a hand moves, so a "blend" effect wasn't distinguishable
+// from normal movement), we map it onto a tremolo: a rapid, rhythmic volume
+// wobble on whatever sound is currently playing. The faster the flutter, the
+// faster the wobble — a direct, physical link between the gesture and what
+// you hear, the same way a violinist's wrist motion becomes vibrato.
+//
+// Detected via a short rolling window of recent fingertip positions: a
+// flutter covers a long, winding path but ends up roughly where it started
+// (high path-to-net-displacement ratio), unlike a deliberate point-and-move
+// which travels in roughly one direction.
 const flutterHistoryLength = 15;
 const flutterMinPathLength = 60; // px — ignore tiny jitter from a still hand
 const flutterPathToDisplacementRatio = 2.2;
-const maxBlendedSounds = 3;
-const blendedVolume = 0.6; // quieter per-sound so a 3-way blend doesn't overwhelm
 const primaryVolume = 1;
+
+// Faster fluttering (more px traveled in the same window) => faster wobble.
+const tremoloMinRateHz = 4;
+const tremoloMaxRateHz = 12;
+const tremoloMaxPathLength = 400; // path length that maps to the fastest wobble
+const tremoloDepth = 0.4; // volume swings between (1 - depth) and 1
 
 function recordFingerPosition(handIndex, x, y) {
   let history = fingerHistories[handIndex] || [];
@@ -273,54 +283,57 @@ function recordFingerPosition(handIndex, x, y) {
   return history;
 }
 
-function isFluttering(history) {
-  if (history.length < flutterHistoryLength) return false;
+// Returns the recent path length if this history looks like a flutter, or
+// null if the hand is just moving normally (or sitting still).
+function flutterPathLength(history) {
+  if (history.length < flutterHistoryLength) return null;
 
   let pathLength = 0;
   for (let i = 1; i < history.length; i++) {
     pathLength += dist(history[i - 1].x, history[i - 1].y, history[i].x, history[i].y);
   }
-  if (pathLength < flutterMinPathLength) return false; // hand is basically still
+  if (pathLength < flutterMinPathLength) return null; // hand is basically still
 
   let netDisplacement = dist(
     history[0].x, history[0].y,
     history[history.length - 1].x, history[history.length - 1].y
   );
-  return pathLength / max(netDisplacement, 1) > flutterPathToDisplacementRatio;
+  let isFlutter = pathLength / max(netDisplacement, 1) > flutterPathToDisplacementRatio;
+  return isFlutter ? pathLength : null;
 }
 
-// Pick the most recent distinct sound zones the fingertip passed through —
-// these are the sounds a fluttering hand is "hovering between" and wants blended.
-function recentDistinctZones(history) {
-  let zones = [];
-  for (let i = history.length - 1; i >= 0 && zones.length < maxBlendedSounds; i--) {
-    let zone = soundIndexForPosition(history[i].x, history[i].y);
-    if (!zones.includes(zone)) zones.push(zone);
-  }
-  return zones;
+// A continuous volume oscillation (LFO) whose speed scales with flutter
+// intensity. Using millis() (not frameCount) keeps the wobble's real-world
+// speed consistent regardless of frame rate.
+function tremoloVolume(pathLength) {
+  let rateHz = map(constrain(pathLength, flutterMinPathLength, tremoloMaxPathLength),
+                   flutterMinPathLength, tremoloMaxPathLength,
+                   tremoloMinRateHz, tremoloMaxRateHz);
+  let lfo = sin((millis() / 1000) * rateHz * TWO_PI); // oscillates -1..1
+  return primaryVolume - tremoloDepth / 2 + (tremoloDepth / 2) * lfo; // ranges (1 - depth)..1
 }
 
 // Figures out what one hand wants to hear right now and merges it into the
-// shared desiredVolumes map (louder request wins if hands overlap on a sound).
-function collectDesiredSounds(handIndex, x, y, desiredVolumes) {
+// shared desiredSounds map. `ramp` is how long setVolume should take to reach
+// the target — tremolo needs near-instant updates each frame so the wobble is
+// actually audible; normal movement gets a smooth ramp to avoid clicks.
+function collectDesiredSounds(handIndex, x, y, desiredSounds) {
   let history = recordFingerPosition(handIndex, x, y);
+  let zone = soundIndexForPosition(x, y);
+  let pathLength = flutterPathLength(history);
 
-  let zonesToVolumes;
-  if (isFluttering(history)) {
-    zonesToVolumes = recentDistinctZones(history).map((zone) => [zone, blendedVolume]);
-  } else {
-    zonesToVolumes = [[soundIndexForPosition(x, y), primaryVolume]];
-  }
-
-  for (let [soundIndex, volume] of zonesToVolumes) {
-    desiredVolumes.set(soundIndex, max(desiredVolumes.get(soundIndex) || 0, volume));
+  if (pathLength !== null) {
+    desiredSounds.set(zone, { volume: tremoloVolume(pathLength), ramp: 0 });
+  } else if (!desiredSounds.has(zone) || desiredSounds.get(zone).ramp === 0) {
+    // Don't let a plain point override another hand's tremolo on the same zone
+    desiredSounds.set(zone, { volume: primaryVolume, ramp: 0.15 });
   }
 }
 
 // Brings actual sound playback in line with what the hands currently want:
 // starts/raises anything newly desired, fades out anything no longer wanted.
-function syncActiveSounds(desiredVolumes) {
-  desiredVolumes.forEach((targetVolume, soundIndex) => {
+function syncActiveSounds(desiredSounds) {
+  desiredSounds.forEach(({ volume, ramp }, soundIndex) => {
     cancelStopTimer(soundIndex); // still wanted — don't let a queued stop kill it
 
     if (!activeSounds.has(soundIndex)) {
@@ -329,13 +342,13 @@ function syncActiveSounds(desiredVolumes) {
         sounds[soundIndex].loop();
       }
     }
-    sounds[soundIndex].setVolume(targetVolume, 0.15); // smooth ramp avoids clicks when blending shifts
+    sounds[soundIndex].setVolume(volume, ramp);
   });
 
   // Copy to an array first — scheduleStop mutates activeSounds asynchronously,
   // and mutating a Set while iterating it is asking for trouble.
   for (let soundIndex of [...activeSounds]) {
-    if (!desiredVolumes.has(soundIndex) && !soundStopTimers[soundIndex]) {
+    if (!desiredSounds.has(soundIndex) && !soundStopTimers[soundIndex]) {
       scheduleStop(soundIndex);
     }
   }

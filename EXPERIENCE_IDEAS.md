@@ -6,12 +6,15 @@ detection) are tracked separately in commit history on `weave-improvements`.
 
 ## Gesture & interaction
 
-- **✅ Implemented — "flutter to blend"**: many people were observed quickly
-  wagging/fluttering their fingers, seemingly trying to mix nearby sounds
-  rather than switch between them one at a time. The system now detects this
-  motion (a winding path that loops back near its start, vs. a deliberate
-  point-and-move) and layers up to 3 nearby sounds together at a softened
-  volume instead of hard-switching. See `CHANGELOG.md`.
+- **✅ Implemented — "flutter as tremolo"**: many people were observed
+  quickly wagging/fluttering their fingers — an instinctive gesture that
+  deserved a distinct response. First tried mapping it to "blend nearby
+  sounds," but the sketch already crossfades between sounds as a hand moves,
+  so the blend wasn't perceptibly different from normal movement. Replaced
+  with a tremolo: a rapid volume wobble on the currently active sound, whose
+  speed scales with how fast the flutter is — a direct, physical link between
+  the gesture and what you hear (like a violinist's wrist motion becoming
+  vibrato). See `CHANGELOG.md`.
 - **Expanded gesture vocabulary** — beyond point + fist + flutter: pinch for
   volume control, spread for layering/chords, two-hand interactions for
   harmony or panning. Leans further into the "becoming a conductor" framing.

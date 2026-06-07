@@ -24,10 +24,14 @@ All notable changes made on the `weave-improvements` branch are documented here.
   triggered the handful of sounds overlapping their natural horizontal
   movement range. Sounds are now spread across a 4-column x 3-row grid, so
   every sound is reachable through normal up/down/left/right movement.
-- **Added "flutter to blend" gesture** — quickly wagging fingers back and
-  forth (something many people did instinctively, seemingly trying to mix
-  sounds) is now detected and used to layer up to 3 nearby sounds together
-  at a softened volume, rather than abruptly switching between them.
+- **Added "flutter as tremolo" gesture** — quickly wagging fingers back and
+  forth (something many people did instinctively) is now detected and mapped
+  to a tremolo effect: a rapid volume wobble on the active sound, with the
+  wobble's speed scaling with how fast the flutter is. (An earlier version of
+  this mapped flutter to "blend nearby sounds," but since the sketch already
+  crossfades between sounds during normal movement, that effect wasn't
+  perceptibly different — tremolo gives the gesture a distinct, audible
+  identity tied directly to the physical motion.)
 
 ## Code cleanup
 
