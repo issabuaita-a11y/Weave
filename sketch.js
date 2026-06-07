@@ -3,6 +3,7 @@ let video;
 let hands = [];
 let sounds = [];
 let activeSounds = new Set();
+let soundStopTimers = [];
 let ellipses = [];
 let ballToSound = {};
 let ellipseSpacing = 100;
@@ -93,13 +94,23 @@ function draw() {
 
 function detectFist(hand) {
   let wrist = hand.keypoints.find(k => k.name === 'wrist');
+  let middleKnuckle = hand.keypoints.find(k => k.name === 'middle_finger_mcp');
+  if (!wrist || !middleKnuckle) return false;
+
+  // Use the wrist-to-knuckle distance as a "hand scale" reference so the
+  // fist threshold adapts to hand size — which varies with camera
+  // resolution, lens, and how far the user stands from the camera.
+  let handScale = dist(wrist.x, wrist.y, middleKnuckle.x, middleKnuckle.y);
+  if (handScale === 0) return false;
+
+  let closedThreshold = handScale * 1.3;
   let fingertips = ['thumb_tip', 'index_finger_tip', 'middle_finger_tip', 'ring_finger_tip', 'pinky_tip'];
 
   for (let tip of fingertips) {
     let fingertip = hand.keypoints.find(k => k.name === tip);
-    if (fingertip && wrist) {
+    if (fingertip) {
       let distance = dist(fingertip.x, fingertip.y, wrist.x, wrist.y);
-      if (distance > 50) { // Adjust threshold as needed
+      if (distance > closedThreshold) {
         return false; // If any fingertip is far from the wrist, it's not a fist
       }
     }
@@ -133,18 +144,10 @@ function createEllipses() {
 }
 
 function assignBallsToSounds() {
-  let totalBalls = ellipses.length;
-  let ballsPerSound = Math.floor(totalBalls / sounds.length); // Should be 4 per sound
-  let extraBalls = totalBalls % sounds.length; // Handle any extra balls
-
-  let soundIndex = 0;
-  
-  for (let i = 0; i < totalBalls; i++) {
-    ballToSound[i] = soundIndex;
-    
-    if ((i + 1) % ballsPerSound === 0) {
-      soundIndex = (soundIndex + 1) % sounds.length; // Cycle through sounds
-    }
+  // Assign each ellipse to whichever sound its x position maps to, so the
+  // ball that lights up always matches the sound that plays there.
+  for (let i = 0; i < ellipses.length; i++) {
+    ballToSound[i] = soundIndexForX(ellipses[i].x);
   }
 }
 
@@ -206,47 +209,67 @@ function isAnyHandNear(x, y) {
   return false;
 }
 
-function controlSoundForHand(x, y) {
+// Single source of truth for "which sound zone is x in" — used both to
+// trigger sounds and to decide which sounds should keep playing, so the
+// two never disagree.
+function soundIndexForX(x) {
   let soundIndex = floor(map(x, 0, width, 0, sounds.length));
-  soundIndex = constrain(soundIndex, 0, sounds.length - 1);
+  return constrain(soundIndex, 0, sounds.length - 1);
+}
+
+function cancelStopTimer(soundIndex) {
+  if (soundStopTimers[soundIndex]) {
+    clearTimeout(soundStopTimers[soundIndex]);
+    soundStopTimers[soundIndex] = null;
+  }
+}
+
+function controlSoundForHand(x, y) {
+  let soundIndex = soundIndexForX(x);
+
+  cancelStopTimer(soundIndex); // hand is back on this sound — don't let a queued stop kill it
 
   if (!activeSounds.has(soundIndex)) {
     activeSounds.add(soundIndex);
+    sounds[soundIndex].setVolume(1);
     if (!sounds[soundIndex].isPlaying()) {
       sounds[soundIndex].loop();
-      sounds[soundIndex].setVolume(1); // Full volume
     }
   }
 }
 
+function scheduleStop(soundIndex) {
+  cancelStopTimer(soundIndex); // never stack timers for the same sound
+  sounds[soundIndex].setVolume(0, 0.5);
+  soundStopTimers[soundIndex] = setTimeout(() => {
+    sounds[soundIndex].stop();
+    activeSounds.delete(soundIndex);
+    soundStopTimers[soundIndex] = null;
+  }, 500);
+}
+
 function stopInactiveSounds() {
-  activeSounds.forEach((soundIndex) => {
-    if (!hands.some((hand) => {
-      let indexTip = hand.keypoints.find(k => k.name === 'index_finger_tip');
-      if (indexTip) {
-        let flippedX = width - indexTip.x;
-        let assignedSound = floor(map(flippedX, 0, width, 0, sounds.length));
-        return assignedSound === soundIndex;
-      }
-      return false;
-    })) {
-      sounds[soundIndex].setVolume(0, 0.5);
-      setTimeout(() => {
-        sounds[soundIndex].stop();
-        activeSounds.delete(soundIndex);
-      }, 500);
+  let activeZones = new Set();
+  for (let hand of hands) {
+    let indexTip = hand.keypoints.find(k => k.name === 'index_finger_tip');
+    if (indexTip) {
+      activeZones.add(soundIndexForX(width - indexTip.x));
     }
-  });
+  }
+
+  // Copy to an array first — scheduleStop mutates activeSounds asynchronously,
+  // and mutating a Set while iterating it is asking for trouble.
+  for (let soundIndex of [...activeSounds]) {
+    if (!activeZones.has(soundIndex) && !soundStopTimers[soundIndex]) {
+      scheduleStop(soundIndex);
+    }
+  }
 }
 
 function stopAllSounds() {
-  activeSounds.forEach((soundIndex) => {
-    sounds[soundIndex].setVolume(0, 0.5);
-    setTimeout(() => {
-      sounds[soundIndex].stop();
-      activeSounds.delete(soundIndex);
-    }, 500);
-  });
+  for (let soundIndex of [...activeSounds]) {
+    scheduleStop(soundIndex);
+  }
 }
 
 function resetEllipses() {
