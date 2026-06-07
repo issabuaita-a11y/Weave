@@ -98,6 +98,7 @@ function draw() {
       let flippedX = width - indexTip.x; // Flip the x-axis for natural interaction
       animateEllipses(flippedX, indexTip.y);
       let volumeScale = pinchVolumeScale(hand); // pinched fingers = quieter, spread = louder
+      drawPinchRing(flippedX, indexTip.y, volumeScale);
       collectDesiredSounds(handIndex, flippedX, indexTip.y, volumeScale, desiredSounds);
     } else {
       fingerHistories[handIndex] = null; // no fingertip this frame — don't carry stale flutter history
@@ -170,6 +171,22 @@ function pinchVolumeScale(hand) {
   let ratio = dist(thumbTip.x, thumbTip.y, indexTip.x, indexTip.y) / scale;
   let clamped = constrain(ratio, pinchClosedRatio, pinchOpenRatio);
   return map(clamped, pinchClosedRatio, pinchOpenRatio, pinchMinVolume, pinchMaxVolume);
+}
+
+// Visual feedback for the pinch gesture: a ring around the fingertip whose
+// radius tracks the live volume ceiling — pinch in and it shrinks, spread
+// open and it grows — so people can see the gesture is registering and
+// which way to move to raise or lower volume, without reading any numbers.
+const pinchRingMinRadius = 12;
+const pinchRingMaxRadius = 40;
+
+function drawPinchRing(x, y, volumeScale) {
+  let radius = map(volumeScale, pinchMinVolume, pinchMaxVolume, pinchRingMinRadius, pinchRingMaxRadius);
+  noFill();
+  stroke(255, 255, 255, 180);
+  strokeWeight(3);
+  ellipse(x, y, radius * 2, radius * 2);
+  noStroke();
 }
 
 function gotHands(results) {
