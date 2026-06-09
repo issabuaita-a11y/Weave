@@ -17,6 +17,26 @@ let isPaused = true; // Track pause state
 let frameSkip = 3;
 let frameCount = 0;
 
+// Fist hold — must be sustained for FIST_CONFIRM_FRAMES consecutive frames
+// before stopping all sounds. Filters out natural hand-close motions (~200ms)
+// while still feeling like a conductor's deliberate hold (~2s).
+const FIST_CONFIRM_FRAMES = 20; // ~2s at 10fps effective (frameSkip=3 @ 30fps)
+const FIST_COOLDOWN_MS = 3000;
+let fistFrameCount = 0;
+let lastFistFireTime = 0;
+
+// Discrete pinch-to-volume: thumb actually touching index = one pinch event.
+// Double pinch within window = volume down one step; triple = volume up one step.
+// Uses a tight contact threshold (actual touch, not proximity drift) to avoid
+// accidental triggers during normal hand movement.
+const PINCH_CONTACT_RATIO  = 0.18; // thumb-tip to index-tip / handScale — actual contact
+const PINCH_RELEASE_RATIO  = 0.35; // must rise above this to count as released
+const PINCH_WINDOW_MS      = 2000; // double/triple pinch must complete within this window
+const VOLUME_STEPS         = [0.2, 0.4, 0.6, 0.8, 1.0];
+let currentVolumeStep      = 4;    // start at full volume (index into VOLUME_STEPS)
+let pinchState             = [];   // per hand: 'open' | 'contact'
+let pinchTapTimes          = [];   // timestamps of recent completed pinch events (across all hands)
+
 // How close (in canvas px) a fingertip must be to an ellipse to activate it.
 // Tuned by feel against the default ellipseSpacing (100px) and baseSize (50px)
 // — small enough that neighboring balls don't activate together.
@@ -99,22 +119,23 @@ function draw() {
   hands.forEach((hand, handIndex) => {
     let indexTip = hand.keypoints.find(k => k.name === 'index_finger_tip');
     if (indexTip) {
-      let flippedX = width - indexTip.x; // Flip the x-axis for natural interaction
+      let flippedX = width - indexTip.x;
       animateEllipses(flippedX, indexTip.y);
-      let volumeScale = pinchVolumeScale(hand, handIndex); // pinched fingers = quieter, spread = louder, smoothed
+      updatePinchTaps(hand, handIndex);
+      let volumeScale = VOLUME_STEPS[currentVolumeStep];
       noteVolumeForHud(volumeScale);
       collectDesiredSounds(handIndex, flippedX, indexTip.y, volumeScale, desiredSounds);
     } else {
-      fingerHistories[handIndex] = null; // no fingertip this frame — don't carry stale flutter history
-    }
-
-    // Detect fist gesture
-    if (detectFist(hand)) {
-      stopAllSounds(); // Stop all sounds
-      resetEllipses(); // Reset ellipses to default state
-      desiredSounds.clear(); // a fist overrides whatever the hand was just doing
+      fingerHistories[handIndex] = null;
     }
   });
+
+  // Fist hold: fires once after sustained hold, stops everything
+  if (updateFistAndShouldFire(hands)) {
+    stopAllSounds();
+    resetEllipses();
+    desiredSounds.clear();
+  }
 
   syncActiveSounds(desiredSounds);
   drawVolumeHud();
@@ -131,66 +152,78 @@ function handScale(hand) {
   return dist(wrist.x, wrist.y, middleKnuckle.x, middleKnuckle.y);
 }
 
-function detectFist(hand) {
+// Detects deliberate thumb-to-index pinch events (actual contact, not proximity
+// drift). Double pinch within PINCH_WINDOW_MS = volume down; triple = volume up.
+// The tight PINCH_CONTACT_RATIO threshold (actual touch) means fingers casually
+// drifting near each other during movement won't register as a pinch.
+function updatePinchTaps(hand, handIndex) {
+  let thumbTip  = hand.keypoints.find(k => k.name === 'thumb_tip');
+  let indexTip  = hand.keypoints.find(k => k.name === 'index_finger_tip');
+  let scale     = handScale(hand);
+  if (!thumbTip || !indexTip || scale === 0) return;
+
+  let ratio    = dist(thumbTip.x, thumbTip.y, indexTip.x, indexTip.y) / scale;
+  let prevState = pinchState[handIndex] || 'open';
+
+  if (prevState === 'open' && ratio < PINCH_CONTACT_RATIO) {
+    // Transition: open → contact — record a tap
+    pinchState[handIndex] = 'contact';
+    pinchTapTimes.push(millis());
+
+    // Prune taps outside the window
+    let now = millis();
+    pinchTapTimes = pinchTapTimes.filter(t => now - t < PINCH_WINDOW_MS);
+
+    if (pinchTapTimes.length === 2) {
+      currentVolumeStep = max(0, currentVolumeStep - 1); // double pinch → volume down
+      pinchTapTimes = [];
+    } else if (pinchTapTimes.length >= 3) {
+      currentVolumeStep = min(VOLUME_STEPS.length - 1, currentVolumeStep + 1); // triple → up
+      pinchTapTimes = [];
+    }
+  } else if (prevState === 'contact' && ratio > PINCH_RELEASE_RATIO) {
+    pinchState[handIndex] = 'open';
+  }
+}
+
+function isFistShape(hand) {
   let wrist = hand.keypoints.find(k => k.name === 'wrist');
   let scale = handScale(hand);
   if (!wrist || scale === 0) return false;
-
   let closedThreshold = scale * 1.3;
   let fingertips = ['thumb_tip', 'index_finger_tip', 'middle_finger_tip', 'ring_finger_tip', 'pinky_tip'];
-
   for (let tip of fingertips) {
     let fingertip = hand.keypoints.find(k => k.name === tip);
-    if (fingertip) {
-      let distance = dist(fingertip.x, fingertip.y, wrist.x, wrist.y);
-      if (distance > closedThreshold) {
-        return false; // If any fingertip is far from the wrist, it's not a fist
-      }
-    }
+    if (fingertip && dist(fingertip.x, fingertip.y, wrist.x, wrist.y) > closedThreshold) return false;
   }
-  return true; // All fingertips are close to the wrist, so it's a fist
+  return true;
 }
 
-// Pinching (thumb and index finger drawing together) controls volume —
-// pinched = quiet, spread open = full volume. The thumb-to-index distance
-// is measured relative to handScale() so it adapts across cameras/distances,
-// the same way fist detection does.
-// Note: in a natural pointing pose (the sketch's primary gesture), the thumb
-// rests fairly close to the index finger — its ratio sits well below 1.0.
-// The old 0.4–1.4 range treated that resting pose as "half pinched," quietly
-// dragging volume down on any hand that wasn't deliberately spread wide open
-// (which read as "barely detecting" that hand). Shifted the range down so a
-// relaxed pointing hand lands near full volume, and only a deliberate pinch
-// (thumb and index actually touching) lowers it.
-const pinchClosedRatio = 0.12; // thumb-to-index distance / handScale when "closed"
-const pinchOpenRatio = 0.55;   // ...when "open" (relaxed pointing pose, not a wide spread)
-const pinchMinVolume = 0.15;  // never fully mute via pinch — keep some presence
-const pinchMaxVolume = 1.0;
-
-// Raw frame-to-frame hand tracking is jittery, and the volume this drives
-// gets applied to already-playing audio — so following it directly made the
-// volume jump around fast enough to click/crackle the sound. Smoothing each
-// hand's value toward its target over time turns that into a gradual fade,
-// the same way normal point-to-point movement already ramps with `ramp`.
-const pinchSmoothingFactor = 0.06; // lower = slower, gentler volume changes
-let smoothedPinchVolumes = [];
-
-function pinchVolumeScale(hand, handIndex) {
-  let thumbTip = hand.keypoints.find(k => k.name === 'thumb_tip');
-  let indexTip = hand.keypoints.find(k => k.name === 'index_finger_tip');
-  let scale = handScale(hand);
-
-  let target = pinchMaxVolume;
-  if (thumbTip && indexTip && scale !== 0) {
-    let ratio = dist(thumbTip.x, thumbTip.y, indexTip.x, indexTip.y) / scale;
-    let clamped = constrain(ratio, pinchClosedRatio, pinchOpenRatio);
-    target = map(clamped, pinchClosedRatio, pinchOpenRatio, pinchMinVolume, pinchMaxVolume);
+// Returns true once: the frame the sustained fist hold completes.
+// Requires FIST_CONFIRM_FRAMES consecutive fist-shape frames so natural
+// hand-close motions (200–400ms) never fire — only a deliberate conductor hold.
+function updateFistAndShouldFire(hands) {
+  let anyFist = hands.some(h => isFistShape(h));
+  if (anyFist) {
+    fistFrameCount++;
+    if (fistFrameCount === FIST_CONFIRM_FRAMES && millis() - lastFistFireTime > FIST_COOLDOWN_MS) {
+      lastFistFireTime = millis();
+      return true;
+    }
+  } else {
+    fistFrameCount = 0;
   }
+  return false;
+}
 
-  let current = smoothedPinchVolumes[handIndex];
-  current = current === undefined ? target : lerp(current, target, pinchSmoothingFactor);
-  smoothedPinchVolumes[handIndex] = current;
-  return current;
+// pinchMinVolume kept for the HUD mapper — the actual volume ceiling now comes
+// from VOLUME_STEPS[currentVolumeStep] set by discrete pinch events.
+const pinchMinVolume = VOLUME_STEPS[0];
+const pinchMaxVolume = VOLUME_STEPS[VOLUME_STEPS.length - 1];
+
+// Unused — kept so noteVolumeForHud callers don't break.
+function pinchVolumeScale() {
+  return VOLUME_STEPS[currentVolumeStep];
 }
 
 // Visual feedback for the pinch gesture, styled after the macOS volume HUD:
@@ -289,12 +322,69 @@ function drawEllipses() {
 }
 
 function drawPausedScreen() {
-  background (204, 255, 255)
+  background(204, 255, 255);
+  textFont('HWT Arabesque');
   textAlign(CENTER, CENTER);
-  fill(34,139,34);
-  textSize(90);
-  textFont ('HWT Arabesque');
-  text('Press the "Space bar" to start', width / 2, height / 2);
+
+  // Title
+  fill(34, 139, 34);
+  textSize(110);
+  text('WEAVE', width / 2, height * 0.13);
+
+  // Subtitle
+  textSize(38);
+  fill(20, 100, 20);
+  text('An interactive sound installation', width / 2, height * 0.22);
+
+  // Divider
+  stroke(34, 139, 34, 120);
+  strokeWeight(2);
+  line(width * 0.2, height * 0.28, width * 0.8, height * 0.28);
+  noStroke();
+
+  // Gesture instructions
+  fill(20, 100, 20);
+  textSize(34);
+  textAlign(LEFT, TOP);
+
+  let col1 = width * 0.15;
+  let col2 = width * 0.55;
+  let rowH  = height * 0.11;
+  let startY = height * 0.33;
+
+  // Left column
+  text('☞  Point your finger', col1, startY);
+  text('✊  Hold a fist (~2 sec)', col1, startY + rowH);
+  text('〰  Flutter your fingers', col1, startY + rowH * 2);
+
+  // Right column
+  text('✌✌  Pinch twice', col2, startY);
+  text('✌✌✌  Pinch three times', col2, startY + rowH);
+
+  // Descriptions — smaller
+  textSize(24);
+  fill(30, 120, 30);
+
+  text('Trigger and layer sounds', col1, startY + 42);
+  text('Stop all sounds', col1, startY + rowH + 42);
+  text('Add tremolo effect', col1, startY + rowH * 2 + 42);
+
+  text('Volume down one step', col2, startY + 42);
+  text('Volume up one step', col2, startY + rowH + 42);
+
+  // Tip
+  textAlign(CENTER, CENTER);
+  textSize(26);
+  fill(34, 139, 34, 180);
+  text('You can use both hands at the same time', width / 2, height * 0.78);
+
+  // Start prompt
+  textSize(46);
+  fill(34, 139, 34);
+  // Gentle pulse to draw the eye
+  let pulse = map(sin(frameCount * 0.05), -1, 1, 180, 255);
+  fill(34, 139, 34, pulse);
+  text('Press  SPACE  to begin', width / 2, height * 0.89);
 }
 
 function animateEllipses(handX, handY) {
