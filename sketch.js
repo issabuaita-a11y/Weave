@@ -101,8 +101,17 @@ function draw() {
   // overridden by another hand simply pointing at the same zone.
   let desiredSounds = new Map();
 
-  let volumeScale = updateGlobalPinchVolume(hands); // both hands pinching = quieter, smoothed
-  noteVolumeForHud(volumeScale);
+  // A clenched fist curls the thumb and index fingertip close together —
+  // which, left unchecked, also reads as a deliberate pinch and pops up the
+  // volume HUD right as the fist gesture is stopping the sound. Skip the
+  // pinch-volume update entirely while any hand is fisted, so making a fist
+  // is just a clean fade-out with no extra volume-change feedback.
+  let fistFlags = hands.map(detectFist);
+  let volumeScale = smoothedGlobalPinchVolume;
+  if (!fistFlags.some(isFist => isFist)) {
+    volumeScale = updateGlobalPinchVolume(hands); // both hands pinching = quieter, smoothed
+    noteVolumeForHud(volumeScale);
+  }
 
   hands.forEach((hand, handIndex) => {
     let indexTip = hand.keypoints.find(k => k.name === 'index_finger_tip');
@@ -115,8 +124,8 @@ function draw() {
     }
 
     // Detect fist gesture
-    if (detectFist(hand)) {
-      stopAllSounds(); // Stop all sounds
+    if (fistFlags[handIndex]) {
+      stopAllSounds(); // Stop all sounds (fades out, see scheduleStop)
       resetEllipses(); // Reset ellipses to default state
       desiredSounds.clear(); // a fist overrides whatever the hand was just doing
     }
