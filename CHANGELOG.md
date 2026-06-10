@@ -4,6 +4,11 @@ All notable changes made on the `weave-improvements` branch are documented here.
 
 ## Latest changes
 
+- **Fist gesture now cuts sound almost instantly** — closing both hands
+  ("conductor" cutoff) used to fade everything out over the same 500ms used
+  when a hand drifts out of a sound's zone, which read as a ~3 second taper.
+  The fist gesture now uses its own much shorter (50ms) fade, so sound drops
+  out essentially immediately while still avoiding an audio click.
 - **Pinch-to-volume now requires both hands** — a single hand pinching
   (which happens constantly just from a natural pointing pose) no longer
   affects volume. Volume is now a single shared value that only changes while

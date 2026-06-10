@@ -125,7 +125,7 @@ function draw() {
 
     // Detect fist gesture
     if (fistFlags[handIndex]) {
-      stopAllSounds(); // Stop all sounds (fades out, see scheduleStop)
+      stopAllSounds(fistStopFadeMs); // Conductor cutoff — fade out fast (see scheduleStop)
       resetEllipses(); // Reset ellipses to default state
       desiredSounds.clear(); // a fist overrides whatever the hand was just doing
     }
@@ -501,13 +501,20 @@ function syncActiveSounds(desiredSounds) {
   }
 }
 
-function scheduleStop(soundIndex) {
+// Fade duration for a hand drifting out of a sound's zone — long enough to
+// avoid an abrupt cutoff during normal movement.
+const zoneExitFadeMs = 500;
+
+// Fade duration for the "conductor" fist gesture — short enough to feel like
+// everything cuts out immediately, but still avoids an audio click.
+const fistStopFadeMs = 50;
+
+function scheduleStop(soundIndex, fadeDurationMs = zoneExitFadeMs) {
   cancelStopTimer(soundIndex); // never stack timers for the same sound
 
-  // Fade out over 500ms, then actually stop once the fade completes —
-  // avoids an abrupt cutoff when a hand leaves a sound's zone. The
-  // setTimeout duration must match the fade duration passed to setVolume.
-  let fadeDurationMs = 500;
+  // Fade out, then actually stop once the fade completes — avoids an abrupt
+  // cutoff. The setTimeout duration must match the fade duration passed to
+  // setVolume.
   sounds[soundIndex].setVolume(0, fadeDurationMs / 1000);
   soundStopTimers[soundIndex] = setTimeout(() => {
     sounds[soundIndex].stop();
@@ -516,9 +523,9 @@ function scheduleStop(soundIndex) {
   }, fadeDurationMs);
 }
 
-function stopAllSounds() {
+function stopAllSounds(fadeDurationMs = zoneExitFadeMs) {
   for (let soundIndex of [...activeSounds]) {
-    scheduleStop(soundIndex);
+    scheduleStop(soundIndex, fadeDurationMs);
   }
 }
 
