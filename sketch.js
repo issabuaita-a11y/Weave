@@ -17,10 +17,15 @@ let isPaused = true; // Track pause state
 let frameSkip = 3;
 let frameCount = 0;
 
-// How close (in canvas px) a fingertip must be to an ellipse to activate it.
+// How close (in canvas px) a fingertip must be to an ellipse to activate it,
+// and how far it must move away again to deactivate. Two different radii
+// (hysteresis) stop a fingertip sitting near the boundary between two balls
+// from rapidly flipping both of them active/inactive ("beaming") — it has to
+// commit to leaving before the highlight turns off.
 // Tuned by feel against the default ellipseSpacing (100px) and baseSize (50px)
 // — small enough that neighboring balls don't activate together.
 const ellipseHoverRadius = 100;
+const ellipseHoverExitRadius = 140;
 
 
 // Colors assigned to each sound
@@ -96,13 +101,14 @@ function draw() {
   // overridden by another hand simply pointing at the same zone.
   let desiredSounds = new Map();
 
+  let volumeScale = updateGlobalPinchVolume(hands); // both hands pinching = quieter, smoothed
+  noteVolumeForHud(volumeScale);
+
   hands.forEach((hand, handIndex) => {
     let indexTip = hand.keypoints.find(k => k.name === 'index_finger_tip');
     if (indexTip) {
       let flippedX = width - indexTip.x; // Flip the x-axis for natural interaction
       animateEllipses(flippedX, indexTip.y);
-      let volumeScale = pinchVolumeScale(hand, handIndex); // pinched fingers = quieter, spread = louder, smoothed
-      noteVolumeForHud(volumeScale);
       collectDesiredSounds(handIndex, flippedX, indexTip.y, volumeScale, desiredSounds);
     } else {
       fingerHistories[handIndex] = null; // no fingertip this frame — don't carry stale flutter history
@@ -151,10 +157,10 @@ function detectFist(hand) {
   return true; // All fingertips are close to the wrist, so it's a fist
 }
 
-// Pinching (thumb and index finger drawing together) controls volume —
-// pinched = quiet, spread open = full volume. The thumb-to-index distance
-// is measured relative to handScale() so it adapts across cameras/distances,
-// the same way fist detection does.
+// Pinching with both hands at once (thumb and index finger drawing together
+// on each hand) controls volume — pinched = quiet, spread open = full
+// volume. The thumb-to-index distance is measured relative to handScale() so
+// it adapts across cameras/distances, the same way fist detection does.
 // Note: in a natural pointing pose (the sketch's primary gesture), the thumb
 // rests fairly close to the index finger — its ratio sits well below 1.0.
 // The old 0.4–1.4 range treated that resting pose as "half pinched," quietly
@@ -169,28 +175,40 @@ const pinchMaxVolume = 1.0;
 
 // Raw frame-to-frame hand tracking is jittery, and the volume this drives
 // gets applied to already-playing audio — so following it directly made the
-// volume jump around fast enough to click/crackle the sound. Smoothing each
-// hand's value toward its target over time turns that into a gradual fade,
-// the same way normal point-to-point movement already ramps with `ramp`.
+// volume jump around fast enough to click/crackle the sound. Smoothing the
+// value toward its target over time turns that into a gradual fade, the same
+// way normal point-to-point movement already ramps with `ramp`.
 const pinchSmoothingFactor = 0.06; // lower = slower, gentler volume changes
-let smoothedPinchVolumes = [];
 
-function pinchVolumeScale(hand, handIndex) {
+// Volume is a single shared value, only adjusted while BOTH hands are visible
+// and both are pinching (thumb and index together on each hand). A single
+// hand pinching alone — which happens constantly just from pointing at a
+// ball — no longer touches volume; it now takes a deliberate two-handed
+// "squeeze" on both sides at once. When fewer than two hands are tracked, or
+// either hand's pinch can't be measured, volume just holds at its last value.
+let smoothedGlobalPinchVolume = pinchMaxVolume;
+
+// Thumb-to-index distance / handScale, or null if this hand's pinch can't be
+// measured (missing keypoints / zero scale).
+function pinchRatio(hand) {
   let thumbTip = hand.keypoints.find(k => k.name === 'thumb_tip');
   let indexTip = hand.keypoints.find(k => k.name === 'index_finger_tip');
   let scale = handScale(hand);
+  if (!thumbTip || !indexTip || scale === 0) return null;
+  return dist(thumbTip.x, thumbTip.y, indexTip.x, indexTip.y) / scale;
+}
 
-  let target = pinchMaxVolume;
-  if (thumbTip && indexTip && scale !== 0) {
-    let ratio = dist(thumbTip.x, thumbTip.y, indexTip.x, indexTip.y) / scale;
-    let clamped = constrain(ratio, pinchClosedRatio, pinchOpenRatio);
-    target = map(clamped, pinchClosedRatio, pinchOpenRatio, pinchMinVolume, pinchMaxVolume);
+function updateGlobalPinchVolume(hands) {
+  if (hands.length >= 2) {
+    let ratios = hands.map(pinchRatio);
+    if (ratios.every(r => r !== null)) {
+      let avgRatio = ratios.reduce((a, b) => a + b, 0) / ratios.length;
+      let clamped = constrain(avgRatio, pinchClosedRatio, pinchOpenRatio);
+      let target = map(clamped, pinchClosedRatio, pinchOpenRatio, pinchMinVolume, pinchMaxVolume);
+      smoothedGlobalPinchVolume = lerp(smoothedGlobalPinchVolume, target, pinchSmoothingFactor);
+    }
   }
-
-  let current = smoothedPinchVolumes[handIndex];
-  current = current === undefined ? target : lerp(current, target, pinchSmoothingFactor);
-  smoothedPinchVolumes[handIndex] = current;
-  return current;
+  return smoothedGlobalPinchVolume;
 }
 
 // Visual feedback for the pinch gesture, styled after the macOS volume HUD:
@@ -239,9 +257,26 @@ function drawVolumeHud() {
   }
 }
 
+// ml5 occasionally reports zero hands for a single detection cycle even
+// though a hand is still clearly in frame — a brief tracking blip, not the
+// hand actually leaving. Without smoothing this over, that one blip hits the
+// `hands.length === 0` branch in draw(), which immediately stops all sounds
+// and resets the ellipse grid — i.e. everything visibly "disappears" and
+// resets for an instant. Riding through a few consecutive empty results
+// before treating the hands as actually gone bridges these blips.
+const noHandsGraceCycles = 5;
+let noHandsStreak = 0;
+
 function gotHands(results) {
   if (!isPaused && frameCount % frameSkip === 0) {
-    hands = results;
+    if (results.length > 0) {
+      hands = results;
+      noHandsStreak = 0;
+    } else if (hands.length > 0 && noHandsStreak < noHandsGraceCycles) {
+      noHandsStreak++; // brief blip — keep using the last known hands
+    } else {
+      hands = results; // confirmed empty
+    }
   }
   frameCount++; // Increase the frame count on every call
 }
@@ -305,7 +340,7 @@ function animateEllipses(handX, handY) {
     if (distance < ellipseHoverRadius) {
       ellipseProps.isActive = true;
       ellipseProps.targetColor = soundColors[ballToSound[i]]; // Highlight active ball
-    } else if (!isAnyHandNear(ellipseProps.x, ellipseProps.y)) {
+    } else if (distance > ellipseHoverExitRadius && !isAnyHandNear(ellipseProps.x, ellipseProps.y)) {
       ellipseProps.isActive = false;
       ellipseProps.targetColor = [255, 255, 255]; // Reset to white
     }
@@ -318,7 +353,7 @@ function isAnyHandNear(x, y) {
     if (indexTip) {
       let flippedX = width - indexTip.x;
       let distance = dist(flippedX, indexTip.y, x, y);
-      if (distance < ellipseHoverRadius) {
+      if (distance < ellipseHoverExitRadius) {
         return true;
       }
     }

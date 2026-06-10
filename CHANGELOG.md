@@ -2,6 +2,25 @@
 
 All notable changes made on the `weave-improvements` branch are documented here.
 
+## Latest changes
+
+- **Pinch-to-volume now requires both hands** — a single hand pinching
+  (which happens constantly just from a natural pointing pose) no longer
+  affects volume. Volume is now a single shared value that only changes while
+  both hands are visible and both are pinching at once — a deliberate
+  two-handed "squeeze." With fewer than two hands tracked, volume holds at
+  its last value.
+- **Reduced ball-highlight flicker ("beaming")** — a fingertip resting near
+  the boundary between two balls could rapidly flip both balls'
+  active/inactive highlight. Activating and deactivating a ball now use
+  different radii (hysteresis), so a fingertip has to clearly leave before
+  the highlight turns off.
+- **Smoothed over brief hand-tracking dropouts** — if ml5 reports zero hands
+  for a single detection cycle even though a hand is still in frame, the
+  sketch now rides through a few cycles on the last known hand positions
+  before treating the hands as actually gone, instead of immediately cutting
+  all sound and resetting the ball grid.
+
 ## Bug fixes
 
 - **Fixed audio freeze after extended use** — sound stop/fade timers were

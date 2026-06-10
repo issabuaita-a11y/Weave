@@ -37,6 +37,13 @@ detection.
   positioned (side by side vs. overlapping vs. one further from the camera),
   which would help tell a tracking-confidence issue apart from a framing one.
 
+**Mitigation added:** `gotHands` now rides through a few consecutive
+zero-hand results (a brief ml5 dropout) before treating the hands as actually
+gone, so a one-cycle blip no longer instantly stops sound and resets the ball
+grid. This doesn't fix ml5 dropping a hand from a 2-hand result down to 1 —
+that case isn't addressed yet, since `hands` entries don't have a stable
+identity across detection cycles to hold onto.
+
 ## Resolved
 
 - **Audio freeze after extended use** — see `CHANGELOG.md`.
